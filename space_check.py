@@ -29,7 +29,7 @@ def read_config(filename):
         print(f'checking host {host}...')
         ssh.connect(hostname=host, port=22, username=user, password=password)
         # stdin, stdout, stderr = ssh.exec_command("df -h --total | grep '^total'")
-        stdin, stdout, stderr = ssh.exec_command("[ -d '/usr/local/bin' ] && /usr/local/bin/df -h --total | grep '^total' || df -h --total | grep '^total'")
+        stdin, stdout, stderr = ssh.exec_command("[ -d '/usr/local/bin' ] && /usr/local/bin/df -h --block-size=1G --total | grep '^total' || df -h --block-size=1G --total | grep '^total'")
         res, err = stdout.read(), stderr.read()
         result = res if res else err
         ssh.close()
