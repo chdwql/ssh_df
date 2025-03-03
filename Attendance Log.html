@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手动签到表生成器</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            table-layout: fixed; /* 强制固定布局 */
+        }
+        th, td {
+            border: 1px solid #ddd;
+            text-align: center;
+            padding: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        th {
+            background-color: #f5f5f5;
+        }
+        .weekend {
+            background-color: #f0f0f0;
+            color: #0066cc;
+        }
+        .holiday {
+            background-color: #ffdddd;
+            color: #cc0000;
+        }
+        #result {
+            margin-top: 20px;
+            width: 100%;
+        }
+        #copyBtn {
+            margin-top: 10px;
+        }
+        .fixed-column {
+            background-color: #f9f9f9;
+        }
+        .weekday {
+            height: 40px; /* 周几行高度 */
+            line-height: 20px; /* 两行间距 */
+            padding: 4px;
+            white-space: normal; /* 允许换行 */
+        }
+        .merged-cell {
+            vertical-align: middle;
+        }
+        .remark-row td {
+            text-align: left;
+            font-size: 12px;
+        }
+        .footer-row td {
+            text-align: left;
+        }
+        .title-row td {
+            font-size: 40px;
+            font-weight: bold;
+            padding: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>手动签到表生成器</h1>
+    
+    <div class="controls">
+        <label for="year">年份:</label>
+        <input type="number" id="year" min="1900" max="2100" value="2025">
+        
+        <label for="month">月份:</label>
+        <select id="month">
+            <option value="1">1月</option>
+            <option value="2">2月</option>
+            <option value="3" selected>3月</option>
+            <option value="4">4月</option>
+            <option value="5">5月</option>
+            <option value="6">6月</option>
+            <option value="7">7月</option>
+            <option value="8">8月</option>
+            <option value="9">9月</option>
+            <option value="10">10月</option>
+            <option value="11">11月</option>
+            <option value="12">12月</option>
+        </select>
+        
+        <button id="generate">生成签到表</button>
+    </div>
+    
+    <div id="result"></div>
+    <button id="copyBtn">复制到剪贴板 (Ctrl+Shift+C)</button>
+    
+    <script>
+        const dayNames = ["日", "一", "二", "三", "四", "五", "六"];
+        let holidays = [];
+        const names = ["王庆林", "唐廷梅", "孔向阳", "郝军丽", "贾媛", "公璐", "油利红"];
+
+        async function fetchHolidays(year) {
+            try {
+                const response = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/CN`);
+                const data = await response.json();
+                holidays = data.map(holiday => holiday.date);
+            } catch (error) {
+                console.error('获取节假日数据失败:', error);
+                holidays = [
+                    "2025-01-01", "2025-01-28", "2025-01-29", "2025-01-30", "2025-01-31",
+                    "2025-02-01", "2025-02-02", "2025-02-03", "2025-02-04", "2025-04-04",
+                    "2025-04-05", "2025-04-06", "2025-05-01", "2025-05-02", "2025-05-03",
+                    "2025-05-04", "2025-05-05", "2025-05-31", "2025-06-01", "2025-06-02",
+                    "2025-10-01", "2025-10-02", "2025-10-03", "2025-10-04", "2025-10-05",
+                    "2025-10-06", "2025-10-07", "2025-10-08"
+                ];
+            }
+        }
+
+        document.getElementById('generate').addEventListener('click', async function() {
+            const year = parseInt(document.getElementById('year').value);
+            const month = parseInt(document.getElementById('month').value);
+            await fetchHolidays(year);
+            generateSignInTable(year, month);
+        });
+
+        function generateSignInTable(year, month) {
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '';
+            
+            const table = document.createElement('table');
+
+            // 添加 <colgroup> 定义列宽
+            const colGroup = document.createElement('colgroup');
+            const colSeq = document.createElement('col');
+            colSeq.style.width = '40px'; // 序号列
+            const colName = document.createElement('col');
+            colName.style.width = '80px'; // 姓名列
+            const colTime = document.createElement('col');
+            colTime.style.width = '50px'; // 时间列
+            colGroup.appendChild(colSeq);
+            colGroup.appendChild(colName);
+            colGroup.appendChild(colTime);
+            for (let day = 1; day <= daysInMonth; day++) {
+                const colDay = document.createElement('col');
+                colDay.style.width = '30px'; // 日期列
+                colGroup.appendChild(colDay);
+            }
+            table.appendChild(colGroup);
+
+            // 标题行
+            const titleRow = document.createElement('tr');
+            const titleTd = document.createElement('td');
+            titleTd.colSpan = 3 + daysInMonth;
+            titleTd.className = 'title-row';
+            titleTd.textContent = `山东省地震局工作人员 ${year} 年 ${month} 月考勤管理台账`;
+            titleRow.appendChild(titleTd);
+            table.appendChild(titleRow);
+            
+            // 第一行表头（合并）
+            const headerRow1 = document.createElement('tr');
+            const headers = ['序号', '姓名', '时间'];
+            headers.forEach((text, index) => {
+                const th = document.createElement('th');
+                th.textContent = text;
+                th.className = 'fixed-column merged-cell';
+                th.rowSpan = 2;
+                headerRow1.appendChild(th);
+            });
+            for (let day = 1; day <= daysInMonth; day++) {
+                const th = document.createElement('th');
+                th.textContent = day;
+                headerRow1.appendChild(th);
+            }
+            table.appendChild(headerRow1);
+
+            // 第二行（周几）
+            const weekdayRow = document.createElement('tr');
+            for (let day = 1; day <= daysInMonth; day++) {
+                const date = new Date(year, month - 1, day);
+                const dayOfWeek = date.getDay();
+                const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+                const dateString = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const isHoliday = holidays.includes(dateString);
+                
+                const td = document.createElement('td');
+                td.innerHTML = `周<br>${dayNames[dayOfWeek]}`;
+                if (isHoliday) {
+                    td.className = 'holiday weekday';
+                } else if (isWeekend) {
+                    td.className = 'weekend weekday';
+                } else {
+                    td.className = 'weekday';
+                }
+                weekdayRow.appendChild(td);
+            }
+            table.appendChild(weekdayRow);
+
+            // 数据行（7人，每人2行，序号和姓名合并）
+            for (let i = 0; i < names.length; i++) {
+                // 上午行
+                const morningRow = document.createElement('tr');
+                
+                const seqTd = document.createElement('td');
+                seqTd.textContent = i + 1;
+                seqTd.className = 'fixed-column merged-cell';
+                seqTd.rowSpan = 2;
+                morningRow.appendChild(seqTd);
+                
+                const nameTd = document.createElement('td');
+                nameTd.textContent = names[i];
+                nameTd.className = 'fixed-column merged-cell';
+                nameTd.rowSpan = 2;
+                morningRow.appendChild(nameTd);
+                
+                const morningTd = document.createElement('td');
+                morningTd.textContent = '上午';
+                morningTd.className = 'fixed-column';
+                morningRow.appendChild(morningTd);
+                
+                for (let day = 1; day <= daysInMonth; day++) {
+                    const date = new Date(year, month - 1, day);
+                    const dayOfWeek = date.getDay();
+                    const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+                    const dateString = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    const isHoliday = holidays.includes(dateString);
+                    
+                    const td = document.createElement('td');
+                    if (isHoliday) {
+                        td.className = 'holiday';
+                    } else if (isWeekend) {
+                        td.className = 'weekend';
+                    }
+                    td.textContent = '';
+                    morningRow.appendChild(td);
+                }
+                table.appendChild(morningRow);
+
+                // 下午行
+                const afternoonRow = document.createElement('tr');
+                const afternoonTd = document.createElement('td');
+                afternoonTd.textContent = '下午';
+                afternoonTd.className = 'fixed-column';
+                afternoonRow.appendChild(afternoonTd);
+                
+                for (let day = 1; day <= daysInMonth; day++) {
+                    const date = new Date(year, month - 1, day);
+                    const dayOfWeek = date.getDay();
+                    const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+                    const dateString = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    const isHoliday = holidays.includes(dateString);
+                    
+                    const td = document.createElement('td');
+                    if (isHoliday) {
+                        td.className = 'holiday';
+                    } else if (isWeekend) {
+                        td.className = 'weekend';
+                    }
+                    td.textContent = '';
+                    afternoonRow.appendChild(td);
+                }
+                table.appendChild(afternoonRow);
+            }
+
+            // 备注行
+            const remarkRow = document.createElement('tr');
+            const remarkTd = document.createElement('td');
+            remarkTd.colSpan = 3 + daysInMonth;
+            remarkTd.className = 'remark-row';
+            remarkTd.textContent = '备注：正常出勤-√，出差-A，市内办公-B，病假-C，事假-D，年休假-E，探亲假、婚假、产(护理)假、丧假-F，借调、学习培训-G，补休-H，迟到、早退、旷工-X，值班-Z，请将对应情况填入上表。';
+            remarkRow.appendChild(remarkTd);
+            table.appendChild(remarkRow);
+
+            // 部门信息行
+            const footerRow = document.createElement('tr');
+            const footerTd = document.createElement('td');
+            footerTd.colSpan = 3 + daysInMonth;
+            footerTd.className = 'footer-row';
+            footerTd.innerHTML = '部门（单位）：____________________ 填表人：____________________ 部门（单位）负责人：____________________ 填表时间：____年____月____日';
+            footerRow.appendChild(footerTd);
+            table.appendChild(footerRow);
+            
+            resultDiv.appendChild(table);
+        }
+
+        function copyToClipboard() {
+            const table = document.querySelector('#result table');
+            if (!table) {
+                alert('请先生成签到表！');
+                return;
+            }
+
+            const daysInMonth = table.rows[1].cells.length - 3; // 计算日期列数
+            let colGroupHTML = '<colgroup>';
+            colGroupHTML += '<col style="width: 50px;">'; // 序号
+            colGroupHTML += '<col style="width: 120px;">'; // 姓名
+            colGroupHTML += '<col style="width: 70px;">'; // 时间
+            for (let i = 0; i < daysInMonth; i++) {
+                colGroupHTML += '<col style="width: 30px;">'; // 日期列
+            }
+            colGroupHTML += '</colgroup>';
+
+            const htmlContent = `
+                <table style="border-collapse: collapse; width: 100%; table-layout: fixed;">
+                    ${colGroupHTML}
+                    ${Array.from(table.rows).map(row => `
+                        <tr>
+                            ${Array.from(row.cells).map(cell => {
+                                const isHoliday = cell.className.includes('holiday');
+                                const isWeekend = cell.className.includes('weekend');
+                                const isRemark = cell.className.includes('remark-row');
+                                const isFooter = cell.className.includes('footer-row');
+                                const isTitle = cell.className.includes('title-row');
+                                const isWeekday = cell.className.includes('weekday');
+                                const isFixed = cell.className.includes('fixed-column');
+                                const rowSpan = cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '';
+                                const colSpan = cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '';
+                                return `<td${rowSpan}${colSpan} style="border: 1px solid #ddd; padding: 8px; ${
+                                    isHoliday ? 'background-color: #ffdddd; color: #cc0000;' : 
+                                    isWeekend ? 'background-color: #f0f0f0; color: #0066cc;' :
+                                    isFixed ? 'background-color: #f9f9f9;' : ''
+                                }; ${isRemark || isFooter || isTitle ? 'text-align: left;' : 'text-align: center;'} ${
+                                    isRemark ? 'font-size: 12px;' : ''
+                                } ${isTitle ? 'font-size: 40px; font-weight: bold; padding: 10px;' : ''} ${
+                                    isWeekday ? 'height: 40px; line-height: 20px; padding: 4px; white-space: normal;' : ''
+                                } overflow: hidden; text-overflow: ellipsis;">${cell.innerHTML}</td>`;
+                            }).join('')}
+                        </tr>
+                    `).join('')}
+                </table>
+            `;
+
+            navigator.clipboard.write([
+                new ClipboardItem({
+                    'text/html': new Blob([htmlContent], { type: 'text/html' }),
+                    'text/plain': new Blob([table.outerHTML], { type: 'text/plain' })
+                })
+            ]).then(() => {
+                alert('签到表已复制到剪贴板！请粘贴到Excel中。');
+            }).catch(err => {
+                console.error('复制失败:', err);
+                alert('复制失败，请手动复制表格！');
+            });
+        }
+
+        document.getElementById('copyBtn').addEventListener('click', copyToClipboard);
+
+        document.addEventListener('keydown', (event) => {
+            if (event.ctrlKey && event.shiftKey && event.key === 'C') {
+                event.preventDefault();
+                copyToClipboard();
+            }
+        });
+
+        window.onload = async function() {
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = now.getMonth() + 1;
+            document.getElementById('year').value = year;
+            document.getElementById('month').value = month;
+            await fetchHolidays(year);
+            generateSignInTable(year, month);
+        };
+    </script>
+</body>
+</html>
