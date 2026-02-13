@@ -3,10 +3,11 @@ import paramiko
 import pandas as pd
 import datetime
 import os
+import re
 
 def read_server_config(filename):
     """
-    从配置文件中读取参数，并使用SSH连接执行命令。
+    从配置文件中读取参数，并使用SSH连接执行命令获取磁盘、内存、CPU、型号以及硬件健康信息。
     """
     config = configparser.ConfigParser()
     try:
@@ -31,38 +32,162 @@ def read_server_config(filename):
         
         try:
             ssh.connect(hostname=host, port=22, username=user, password=password, timeout=10)
-            # 核心统计逻辑保持不变
-            command = "[ -d '/usr/local/bin' ] && /usr/local/bin/df -h --block-size=1G --total | grep '^total' || df -h --block-size=1G --total | grep '^total'"
+            
+            # 增加硬件检测：ipmitool 获取传感器状态，dmesg 获取 I/O 错误
+            command = (
+                "echo '---DISK---'; [ -d '/usr/local/bin' ] && /usr/local/bin/df -h --block-size=1G --total 2>/dev/null | grep '^total' || df -h --block-size=1G --total 2>/dev/null | grep '^total';"
+                "echo '---MEM---'; free -m;"
+                "echo '---CPU---'; top -bn1 | grep 'Cpu(s)';"
+                "echo '---MODEL---'; dmidecode -t system | grep -A 5 'System Information' 2>/dev/null;"
+                "echo '---HEALTH---'; ipmitool sdr list 2>/dev/null; dmesg | grep -iE 'error|failed' | tail -n 3 2>/dev/null"
+            )
+            
             stdin, stdout, stderr = ssh.exec_command(command)
-            res, err = stdout.read(), stderr.read()
-            result = res if res else err
-            results[section] = result.decode().strip()
+            res = stdout.read().decode('utf-8', errors='ignore')
+            err = stderr.read().decode('utf-8', errors='ignore')
+            
+            results[section] = {
+                'ip': host,
+                'raw': res if res else err
+            }
         except Exception as e:
             print(f"Failed to connect or execute command on {host}: {e}")
-            results[section] = ""
+            results[section] = {'ip': host, 'raw': ""}
         finally:
             ssh.close()
     
     return results
 
-def get_disk_usage(config_file):
-    """统计服务器硬盘使用"""
-    print("Step 1: Fetching disk usage from servers...")
-    results = read_server_config(config_file)
+def parse_server_data(raw_data):
+    """解析获取到的原始字符串数据"""
+    data = {
+        'Model': '',
+        'Disk_Total(G)': '',
+        'Disk_Used(G)': '',
+        'Disk_Usage': '',
+        'Mem_Total(M)': '',
+        'Mem_Used(M)': '',
+        'Mem_Usage': '',
+        'CPU_Usage': '',
+        'Hardware_Health': '健康'
+    }
     
-    # 核心统计逻辑保持不变
-    for key, value in results.items():
-        results[key] = value.replace('-', '')
+    if not raw_data:
+        data['Hardware_Health'] = '无法获取'
+        return data
 
-    df = pd.DataFrame(((key, *value.replace('total', '').replace('\n', '').split())
-                       for key, value in results.items() if value),  # 过滤掉空的
-                      columns=['Name', 'Size', 'Used', 'Available', 'Use%'])
-    return df
+    # 1. 解析型号 (MODEL)
+    manufacturer = re.search(r'Manufacturer:\s*(.*)', raw_data)
+    product = re.search(r'Product Name:\s*(.*)', raw_data)
+    if manufacturer and product:
+        m_str = manufacturer.group(1).strip()
+        p_str = product.group(1).strip()
+        model_parts = []
+        if m_str and m_str.lower() not in ['empty', 'unknown', 'to be filled by o.e.m.']:
+            model_parts.append(m_str)
+        if p_str and p_str.lower() not in ['empty', 'unknown', 'system product name']:
+            model_parts.append(p_str)
+        data['Model'] = " ".join(model_parts)
+
+    # 2. 解析磁盘 (DISK)
+    disk_match = re.search(r'total\s+(\d+)\s+(\d+)\s+\d+\s+(\d+%)', raw_data)
+    if disk_match:
+        data['Disk_Total(G)'] = disk_match.group(1)
+        data['Disk_Used(G)'] = disk_match.group(2)
+        data['Disk_Usage'] = disk_match.group(3)
+
+    # 3. 解析内存 (MEM)
+    mem_total_match = re.search(r'Mem:\s+(\d+)', raw_data)
+    if mem_total_match:
+        data['Mem_Total(M)'] = mem_total_match.group(1)
+    
+    mem_used_match = re.search(r'-\/\+ buffers\/cache:\s+(\d+)', raw_data)
+    if mem_used_match:
+        data['Mem_Used(M)'] = mem_used_match.group(1)
+    else:
+        mem_line = re.search(r'Mem:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)', raw_data)
+        if mem_line:
+            total, used_raw, free, shared, buff, cache = map(int, mem_line.groups())
+            data['Mem_Used(M)'] = str(used_raw - buff - cache) if (used_raw > buff + cache) else str(used_raw)
+
+    if data['Mem_Total(M)'] and data['Mem_Used(M)']:
+        try:
+            usage = (int(data['Mem_Used(M)']) / int(data['Mem_Total(M)'])) * 100
+            data['Mem_Usage'] = f"{usage:.1f}%"
+        except: pass
+
+    # 4. 解析 CPU
+    cpu_match = re.search(r'(\d+\.?\d*)\s*[%]?\s*id', raw_data)
+    if cpu_match:
+        try:
+            idle = float(cpu_match.group(1))
+            data['CPU_Usage'] = f"{100 - idle:.1f}%"
+        except: pass
+
+    # 5. 解析硬件健康 (HEALTH)
+    if '---HEALTH---' in raw_data:
+        health_section = raw_data.split('---HEALTH---')[1]
+        errors = []
+        # 查找 ipmitool sdr 中不是 ok 的项
+        for line in health_section.split('\n'):
+            if '|' in line:
+                parts = [p.strip() for p in line.split('|')]
+                if len(parts) >= 3:
+                    name, _, status = parts[0], parts[1], parts[2]
+                    if status.lower() not in ['ok', 'ns', 'not readable']:
+                        errors.append(f"{name}:{status}")
+        
+        # 查找 dmesg 中的磁盘报警
+        if re.search(r'i/o error|disk error|failed', health_section, re.I):
+            errors.append("内核磁盘告警")
+
+        if errors:
+            data['Hardware_Health'] = "异常: " + "; ".join(errors)
+        elif not re.search(r'\|\s*ok', health_section, re.I): # 没找到 ok 也没报错，可能是没装工具
+            data['Hardware_Health'] = '未知(无IPMI数据)'
+    
+    return data
+
+def get_server_status(config_file):
+    """统计服务器状态并拆分为性能表和硬件表"""
+    print("Step 1: Fetching server status (Network, Load, Hardware)...")
+    results_map = read_server_config(config_file)
+    
+    perf_data = []
+    hw_data = []
+    
+    for name, info in results_map.items():
+        stats = parse_server_data(info['raw'])
+        
+        # 性能表数据
+        perf_item = {
+            'Name': name,
+            'Model': stats['Model'],
+            'Host_IP': info['ip'],
+            'Disk_Total(G)': stats['Disk_Total(G)'],
+            'Disk_Used(G)': stats['Disk_Used(G)'],
+            'Disk_Usage': stats['Disk_Usage'],
+            'Mem_Total(M)': stats['Mem_Total(M)'],
+            'Mem_Used(M)': stats['Mem_Used(M)'],
+            'Mem_Usage': stats['Mem_Usage'],
+            'CPU_Usage': stats['CPU_Usage']
+        }
+        perf_data.append(perf_item)
+        
+        # 硬件监控表数据
+        hw_item = {
+            'Name': name,
+            'Model': stats['Model'],
+            'Host_IP': info['ip'],
+            'Hardware_Health': stats['Hardware_Health']
+        }
+        hw_data.append(hw_item)
+    
+    return pd.DataFrame(perf_data), pd.DataFrame(hw_data)
 
 def get_table_space():
     """从网页抓取相关信息"""
     print("Step 2: Scrapping table space information from web...")
-    # 爬虫匹配逻辑保持不变
     try:
         table_space = pd.read_html(
             'http://10.37.181.12:9292/qz/fzgongju/shcema/shcema_oper.jsp',
@@ -94,15 +219,17 @@ def main():
     report_name = f"server_monthly_report_{now.strftime('%Y%m')}.xlsx"
 
     # 执行统计
-    disk_df = get_disk_usage(config_file)
+    perf_df, hw_df = get_server_status(config_file)
     table_df = get_table_space()
 
     # 一键生成整合的 Excel
     print(f"Step 3: Generating integrated report: {report_name}")
     try:
         with pd.ExcelWriter(report_name, engine='openpyxl') as writer:
-            if not disk_df.empty:
-                disk_df.to_excel(writer, sheet_name='服务器磁盘使用', index=False)
+            if not perf_df.empty:
+                perf_df.to_excel(writer, sheet_name='服务器性能监控', index=False)
+            if not hw_df.empty:
+                hw_df.to_excel(writer, sheet_name='服务器硬件健康', index=False)
             if not table_df.empty:
                 table_df.to_excel(writer, sheet_name='数据库表空间')
         print("Success: Report generated successfully.")
